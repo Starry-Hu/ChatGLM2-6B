@@ -4,8 +4,7 @@ import pickle
 from copy import deepcopy
 import torch
 from torch import nn
-from accelerate.logging import get_logger
-from loguru import logger as loggers
+import logging
 from transformers import (
     SchedulerType,
     MODEL_MAPPING,
@@ -13,7 +12,6 @@ from transformers import (
     GPT2LMHeadModel,
     BloomForCausalLM,
     ViTForImageClassification,
-    LLaMAForCausalLM, GPT2Model,
 )
 from offsite_tuning.models.clip_vit import CLIPViTForImageClassification
 from offsite_tuning.models.eva_vit import EVAViTForImageClassification
@@ -23,7 +21,7 @@ import argparse
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class MLP(nn.Module):
@@ -99,23 +97,25 @@ def add_epilogue(module, epilogue):
     return module
 
 
-def uniform_choose_layers(layers: nn.ModuleList, num_student_layers=None, only_get_origin_idx=False):
+def uniform_choose_layers(layers: nn.ModuleList, num_student_layers=None, only_get_idx=False):
     if num_student_layers is None:
         num_student_layers = len(layers)
 
     student = nn.ModuleList()
     stride = (len(layers) - 1) / (num_student_layers - 1)
-    origin_idx = []
+    origin_idx, align_idx = [], []  # align_idx records the layer index for distillation alignment
     for i in range(num_student_layers):
         idx = round(i * stride)
-        if only_get_origin_idx:
+        if only_get_idx:
             origin_idx.append(idx)
+            align_item = round((i + 1) * stride) - 1 if round((i + 1) * stride) - 1 < len(layers) else len(layers) - 1
+            align_idx.append(align_item)
             continue
         logger.info(f"Adding layer {idx} to student")
         student.append(layers[idx])
 
-    if only_get_origin_idx:
-        return origin_idx
+    if only_get_idx:
+        return origin_idx, align_idx
     return student
 
 
@@ -154,8 +154,6 @@ def get_layers(model):
         layers = model.vit.encoder.layers
     elif isinstance(model, EVAViTForImageClassification):
         layers = model.blocks
-    elif isinstance(model, LLaMAForCausalLM):
-        layers = model.model.layers
     else:
         raise NotImplementedError
     return layers
@@ -174,10 +172,9 @@ def set_layers(model, layers):
         model.vit.encoder.layers = layers
     elif isinstance(model, EVAViTForImageClassification):
         model.blocks = layers
-    elif isinstance(model, LLaMAForCausalLM):
-        model.model.layers = layers
     else:
         raise NotImplementedError
+
 
 def to_teacher(model, student_l_pad, student_r_pad):
     l = student_l_pad
@@ -205,9 +202,6 @@ def to_teacher(model, student_l_pad, student_r_pad):
         r = len(model.blocks) - student_r_pad
         model.blocks = model.blocks[:l] + \
             model.teacher + model.blocks[r:]
-    elif isinstance(model, LLaMAForCausalLM):
-        r = len(model.model.layers) - student_r_pad
-        model.model.layers = model.model.layers[:l] + model.teacher + model.model.layers[r:]
     else:
         raise NotImplementedError
 
@@ -238,57 +232,39 @@ def to_student(model, student_l_pad, student_r_pad):
         r = len(model.blocks) - student_r_pad
         model.blocks = model.blocks[:l] + \
                        model.student + model.blocks[r:]
-    elif isinstance(model, LLaMAForCausalLM):
-        r = len(model.model.layers) - student_r_pad
-        model.model.layers = model.model.layers[:l] + model.student + model.model.layers[r:]
     else:
         raise NotImplementedError
 
+# for sLLM model load
+def load_student(model, student_state_dict, args):
+    l = args.student_l_pad
 
-def setup_teacher_student(model, args):
-    for param in model.parameters():
-        param.requires_grad = False
-    model_type = type(model).__name__
-    print(f"model is an instance of {model_type}")
-    layers = get_layers(model)
-
-    l, r = args.student_l_pad, len(layers) - args.student_r_pad
-    if args.load_student:
-        logger.critical("load student path", os.path.join(
-            args.load_student, 'student.pt'))
-        student_state_dict = torch.load(os.path.join(
-            args.load_student, 'student.pt'), map_location='cpu')
-        student_layers_len = len(
-            set([k.split('.')[0] for k in student_state_dict.keys()]))
-        logger.info(
-            f"Loading student module from {args.load_student} with {student_layers_len} layers.")
-        student = deepcopy(layers[:student_layers_len])
-        student.load_state_dict(student_state_dict)
-    else:
-        student = deepcopy(layers[l:r])  # 小模型
-
-    if args.student_layer_selection_strategy == 'uniform':
-        student = uniform_choose_layers(student, args.num_student_layers)
+    student_layers_len = len(
+        set([k.split('.')[0] for k in student_state_dict.keys()]))
+    logger.info(f"Loading student module from with {student_layers_len} layers.")
+    if isinstance(model, OPTForCausalLM):
+        r = len(model.model.decoder.layers) - args.student_r_pad
+        student_layers = model.model.decoder.layers[l:l + student_layers_len]
+        student_layers.load_state_dict(student_state_dict)
+        model.model.decoder.layers = model.model.decoder.layers[:l] + \
+                                     student_layers + model.model.decoder.layers[r:]
+    elif isinstance(model, GPT2LMHeadModel):
+        r = len(model.transformer.h) - args.student_r_pad
+        student_layers = model.transformer.h[l:l + student_layers_len]
+        student_layers.load_state_dict(student_state_dict)
+        model.transformer.h = model.transformer.h[:l] + \
+                              student_layers + model.transformer.h[r:]
+    elif isinstance(model, BloomForCausalLM):
+        r = len(model.transformer.h) - args.student_r_pad
+        student_layers = model.transformer.h[l:l + student_layers_len]
+        student_layers.load_state_dict(student_state_dict)
+        model.transformer.h = model.transformer.h[:l] + \
+                              student_layers + model.transformer.h[r:]
     else:
         raise NotImplementedError
 
-    for param in student.parameters():
-        param.data = param.data.float()
-        param.requires_grad = True
+    return model
 
-    model.student = student
-    model.teacher = layers[l:r].half()
-
-    add_prologue(model.student[0], None)
-    add_epilogue(model.student[-1], None)
-    model.student_l = model.student[0]
-    model.student_r = model.student[-1]
-
-    num_student_layers = len(model.student)
-    logger.info(f"Number of student layers: {num_student_layers}")
-
-    gc.collect()
-    torch.cuda.empty_cache()
 
 def setup_trainable_classification_head(model):
     # Setup trainable classification heads
@@ -390,7 +366,7 @@ import math
 from torch import nn
 import torch.nn.functional as F
 
-
+# patient loss code, need teacher scores
 def distillation_loss(y, labels, teacher_scores, T, alpha, reduction_kd='mean', reduction_nll='mean'):
     #if teacher_scores is not None and y.dtype != teacher_scores.dtype:
     #    teacher_scores = teacher_scores.half()

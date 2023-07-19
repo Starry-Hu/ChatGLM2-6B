@@ -106,7 +106,7 @@ class FedTrainer(SerialClientTrainer, ABC):
         origin_trainable = serialize_model_trainable(self.model)
         deserialize_model_trainable(self.model, model_parameters)
         new_trainable = serialize_model_trainable(self.model)
-        logger.critical(f"check content change: {torch.equal(origin_trainable, new_trainable)}")
+        logger.critical(f"check content same( whether change) for client {idx}: {torch.equal(origin_trainable, new_trainable)}")
 
         # Initialize our Trainer
         self.hf_trainer = Seq2SeqTrainer(

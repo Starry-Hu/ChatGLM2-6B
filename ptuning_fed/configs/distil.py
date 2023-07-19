@@ -16,7 +16,7 @@ class DistilArguments:
 
     student_l_pad: int = field(default=0, metadata={"help": "The padding layer number from left"})
 
-    student_r_pad: int = field(default=-1, metadata={"help": "The padding layer number from right"})
+    student_r_pad: int = field(default=0, metadata={"help": "The padding layer number from right"})
 
     use_lora: bool = field(default=False, metadata={"help": "Whether to use LoRA."})
 

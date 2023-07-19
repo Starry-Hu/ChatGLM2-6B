@@ -191,7 +191,7 @@ def use_lora(layers: nn.ModuleList, r: int, lora_alpha: int, lora_dropout: float
              assigned_layers_ids: List = None):
     # Replace all linear layers with LoRALinear layers
     model_type = type(layers[0]).__name__
-    print(f"use_lora student is an instance of {model_type}")
+    print(f"use_lora layers is an instance of {model_type}")
 
     if isinstance(layers[0], OPTDecoderLayer):
         for i, layer in enumerate(layers):

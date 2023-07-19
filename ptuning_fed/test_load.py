@@ -377,6 +377,15 @@ def main():
         model.trainable_module = get_layers(model)
         use_lora(model.trainable_module, distil_args.lora_rank, distil_args.lora_alpha)
 
+    logger.info("load trained model ")
+    model_dict = torch.load('/mnt/workspace/code/ChatGLM2-6B-fed/ptuning_fed/output/adgen-chatglm2-6b-pt-128-2e-2/fed_sLLM/pytorch_model.bin')
+    model.load_state_dict(model_dict)
+
+    logger.info("load trained model pkl")
+    cur_params = serialize_model_trainable(model)
+    deserialize_model_trainable(model, cur_params)
+
+
     fed_trainer = FedTrainer(model, model_args, training_args, data_args, tokenizer, client_datasets,
                              len(client_datasets))
     client_ids = [i for i in range(len(client_datasets))]
