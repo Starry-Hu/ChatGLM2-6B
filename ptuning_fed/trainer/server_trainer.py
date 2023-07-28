@@ -3,17 +3,21 @@ import os
 import gc
 from abc import ABC
 from copy import deepcopy
+from dataclasses import dataclass
+from itertools import chain
 
 import torch
+from datasets import load_from_disk
 from fedlab.core.server.handler import ServerHandler
 from fedlab.core.standalone import ServerHandler
-from transformers import Trainer, AutoConfig
+from transformers import Trainer, AutoConfig, DefaultDataCollator
+from transformers.data.data_collator import DataCollatorMixin
 from transformers.modeling_utils import unwrap_model
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES, AutoModelForCausalLM
 
 from ptuning_fed.param_efficient import use_lora
 from ptuning_fed.utils import get_layers, uniform_choose_layers, to_student, distillation_loss, add_prologue, \
-    add_epilogue
+    add_epilogue, get_block_size
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
@@ -26,6 +30,48 @@ class ServerDistilHandler(ServerHandler, ABC):
         self.training_args = training_args
         self.data_args = data_args
         self.distil_args = distil_args
+
+    def load_distil_data(self, tokenizer, lm_type='clm'):
+        # Load tokenized dataset
+        if self.distil_args.train_tokenized_dataset and self.distil_args.val_tokenized_dataset:
+            tokenized_datasets = load_from_disk(self.distil_args.train_tokenized_dataset)
+            val_dataset = load_from_disk(self.distil_args.val_tokenized_dataset)
+            if 'validation' in val_dataset:
+                tokenized_datasets["validation"] = val_dataset['validation']
+            else:
+                tokenized_datasets["validation"] = val_dataset['train']
+
+        # group dataset
+        block_size = get_block_size(self.distil_args.block_size, tokenizer)
+
+        def group_texts(examples):
+            # Concatenate all texts.
+            concatenated_examples = {
+                k: list(chain(*examples[k])) for k in examples.keys()}
+            total_length = len(concatenated_examples[list(examples.keys())[0]])
+            # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+            # customize this part to your needs.
+            if total_length >= block_size:
+                total_length = (total_length // block_size) * block_size
+            # Split by chunks of max_len.
+            result = {
+                k: [t[i: i + block_size]
+                    for i in range(0, total_length, block_size)]
+                for k, t in concatenated_examples.items()
+            }
+            if lm_type == 'clm':
+                result["labels"] = result["input_ids"].copy()
+            return result
+
+        lm_datasets = tokenized_datasets.map(
+            group_texts,
+            batched=True,
+            num_proc=self.data_args.preprocessing_num_workers,
+            load_from_cache_file=not self.data_args.overwrite_cache,
+            desc=f"Grouping texts in chunks of {block_size}",
+        )
+
+        return lm_datasets
 
     def setup_teacher_student(self, model, args):
         for param in model.parameters():
@@ -70,7 +116,9 @@ class ServerDistilHandler(ServerHandler, ABC):
         gc.collect()
         torch.cuda.empty_cache()
 
-    def distillation(self, train_dataset, eval_dataset, tokenizer, data_collator):
+    def distillation(self, tokenizer):
+        lm_dataset = self.load_distil_data(tokenizer)
+
         logger.info(
             f"======== Distillation with student_l_pad {self.distil_args.student_l_pad}, "
             f"student_r_pad {self.distil_args.student_r_pad} ==========")
@@ -82,10 +130,9 @@ class ServerDistilHandler(ServerHandler, ABC):
         trainer = DistillationTrainer(
             model=self.model,
             args=self.training_args,
-            train_dataset=train_dataset if self.training_args.do_train else None,
-            eval_dataset=eval_dataset if self.training_args.do_eval else None,
-            tokenizer=tokenizer,
-            data_collator=data_collator,
+            train_dataset=lm_dataset['train'],
+            eval_dataset=lm_dataset['validation'],
+            data_collator=DefaultDataCollator(),
             # compute_metrics=self.compute_metrics if self.training_args.predict_with_generate else None,
             distil_args=self.distil_args,
         )
@@ -101,9 +148,9 @@ class ServerDistilHandler(ServerHandler, ABC):
 
         metrics = train_result.metrics
         max_train_samples = (
-            self.data_args.max_train_samples if self.data_args.max_train_samples is not None else len(train_dataset)
+            self.data_args.max_train_samples if self.data_args.max_train_samples is not None else len(lm_dataset['train'])
         )
-        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
+        metrics["train_samples"] = min(max_train_samples, len(lm_dataset['train']))
 
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
@@ -238,7 +285,7 @@ class DistillationTrainer(Trainer):
         # logger.critical(f"teacher_hidden_states: {len(teacher_hidden_states)}, {teacher_hidden_states[-1].shape}")
         # logger.critical(
         #     f"student_hidden_states: origin: {len(student_hidden_states)}, now: {len(student_hidden_states[distil_args.student_l_pad: -distil_args.student_r_pad-1])}, {student_hidden_states[-1].shape}")
-        logger.info(f"len student hidden state: {len(student_hidden_states[distil_args.student_l_pad: -distil_args.student_r_pad-1])}; pad: {distil_args.student_l_pad}, {-distil_args.student_r_pad-1}")
+        # logger.info(f"len student hidden state: {len(student_hidden_states[distil_args.student_l_pad: -distil_args.student_r_pad-1])}; pad: {distil_args.student_l_pad}, {-distil_args.student_r_pad-1}")
         hidden_kd_loss = 0
         for t_hidden, s_hidden in zip(teacher_hidden_states,
                                       student_hidden_states[distil_args.student_l_pad: -distil_args.student_r_pad-1]):  # remove the repeated last layer output

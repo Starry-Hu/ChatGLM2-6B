@@ -8,6 +8,17 @@ from dataclasses import dataclass, field
 class DistilArguments:
     do_distil: bool = field(default=False, metadata={"help": "Whether to run distillation."})
 
+    train_tokenized_dataset: Optional[str] = field(
+        default=None, metadata={"help": "The input tokenized training data file used for distillation"}
+    )
+
+    val_tokenized_dataset: Optional[str] = field(
+        default=None, metadata={"help": "The input tokenized validation data file used for distillation"}
+    )
+
+    # group datasets
+    block_size: int = field(default=None, metadata={"help": "Number of input block in model."})
+
     num_student_layers: int = field(default=None, metadata={"help": "Number of layers in the student model."})
 
     student_layer_selection_strategy: str = field(default='uniform', metadata={"help": "Layer selection strategy"})
@@ -33,4 +44,6 @@ class DistilArguments:
         metadata={"help": "The path to a folder with a valid checkpoint for your distilled model."},
     )
 
-
+    def __post_init__(self):
+        if self.do_distil and self.train_tokenized_dataset is None and self.val_tokenized_dataset is None:
+            raise ValueError("Need a training and a validation file simultaneously when distilling.")

@@ -189,19 +189,6 @@ def main():
     # Temporarily set max_target_length for training.
     max_target_length = data_args.max_target_length
 
-    # Data collator
-    if 'gpt2' in model_args.model_name_or_path.lower():
-        tokenizer.pad_token = tokenizer.eos_token
-    label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
-
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer,
-        model=model,
-        label_pad_token_id=label_pad_token_id,
-        pad_to_multiple_of=None,
-        padding=False
-    )
-
     # copy from chatglm tokenizer py
     def build_prompt(query, history=None):
         if history is None:
@@ -334,17 +321,6 @@ def main():
             )
         # print_dataset_example(predict_dataset[0])
 
-
-    if distil_args.do_distil:
-        server_handler = ServerDistilHandler(model, model_args, training_args, data_args, distil_args)
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        server_handler.distillation(train_dataset, eval_dataset, tokenizer, data_collator)
-        logger.info("Finished distillation. You can use the distilled student model for client local training")
-        return  # only for distillation
-
     # federated
     # Override the decoding parameters of Seq2SeqTrainer
     training_args.generation_max_length = (
@@ -376,15 +352,6 @@ def main():
         model = load_student(model, student_state_dict, distil_args)
         model.trainable_module = get_layers(model)
         use_lora(model.trainable_module, distil_args.lora_rank, distil_args.lora_alpha)
-
-    logger.info("load trained model ")
-    model_dict = torch.load('/mnt/workspace/code/ChatGLM2-6B-fed/ptuning_fed/output/adgen-chatglm2-6b-pt-128-2e-2/fed_sLLM/pytorch_model.bin')
-    model.load_state_dict(model_dict, strict=False)
-
-    logger.info("load trained model pkl")
-    cur_params = serialize_model_trainable(model)
-    deserialize_model_trainable(model, cur_params)
-
 
     fed_trainer = FedTrainer(model, model_args, training_args, data_args, tokenizer, client_datasets,
                              len(client_datasets))

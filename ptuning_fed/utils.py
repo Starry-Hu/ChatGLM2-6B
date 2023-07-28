@@ -301,16 +301,23 @@ def pickle_write(obj, path, write_format="wb"):
         pickle.dump(obj, file)
 
 
-def get_dataset_verbalizers(dataset: str):
-    if dataset == 'mrpc' or 'wic':
-        verbalize = ['no', 'yes']
-    elif dataset == 'qnli':
-        # True = entailment; False = not entailment
-        verbalize = ['yes', 'no']
+def get_block_size(block_size, tokenizer):
+    if block_size is None:
+        block_size = tokenizer.model_max_length
+        if block_size > 1024:
+            logger.warning(
+                f"The tokenizer picked seems to have a very large `model_max_length` ({tokenizer.model_max_length}). "
+                "Picking 1024 instead. You can change that default value by passing --block_size xxx."
+            )
+        block_size = 1024
     else:
-        raise NotImplementedError
-
-    return verbalize
+        if block_size > tokenizer.model_max_length:
+            logger.warning(
+                f"The block_size passed ({block_size}) is larger than the maximum length for the model"
+                f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
+            )
+        block_size = min(block_size, tokenizer.model_max_length)
+    return block_size
 
 
 def serialize_model_trainable(model: torch.nn.Module) -> torch.Tensor:
