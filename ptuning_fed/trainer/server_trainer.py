@@ -144,7 +144,7 @@ class ServerDistilHandler(ServerHandler, ABC):
         self.model.gradient_checkpointing_enable()
         self.model.enable_input_require_grads()
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
-        # trainer.save_model(self.training_args.output_dir)  # Saves the tokenizer too for easy upload
+        trainer.save_model(self.training_args.output_dir)  # Saves the tokenizer too for easy upload
 
         metrics = train_result.metrics
         max_train_samples = (

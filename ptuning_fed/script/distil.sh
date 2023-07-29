@@ -20,9 +20,11 @@ case $run_dir in
 esac
 
 
-process_count=$(echo "$cuda_visible" | awk -F"," '{print NF}')
+echo "cuda_visible: $cuda_visible"
+NUM_GPUS=$(echo "$cuda_visible" | awk -F"," '{print NF}')
 
-gradient_accumulation_steps=$(echo "80 / ($process_count * $bs)" | bc)
+gradient_accumulation_steps=$(( 80 / ($NUM_GPUS * $bs) ))
+echo "gradient_accumulation_steps: ${gradient_accumulation_steps}"
 
 
 # total bs=80
@@ -38,7 +40,7 @@ CUDA_VISIBLE_DEVICES=$cuda_visible torchrun --standalone --nnodes=1 --nproc_per_
     --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
     --logging_steps 500 \
-    --save_steps 2000 \
+    --save_steps 5000 \
     --eval_steps 200 \
     --lr_scheduler_type cosine \
     --learning_rate $LR \
@@ -52,7 +54,7 @@ CUDA_VISIBLE_DEVICES=$cuda_visible torchrun --standalone --nnodes=1 --nproc_per_
     --kd_weight 30.0 \
     --block_size 512 \
     --bf16 \
-    --save_total_limit 3 \
+    --save_total_limit 5 \
     --seed 42
 
 #    --model_name_or_path THUDM/chatglm2-6b \
