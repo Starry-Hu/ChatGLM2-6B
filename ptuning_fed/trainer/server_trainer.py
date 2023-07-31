@@ -167,13 +167,24 @@ class ServerDistilHandler(ServerHandler, ABC):
 
         self._model = trainer.model
 
-    # def load_distilled_student(self):
-    #     client_model, _ = load_model_tokenizer(self.model_args)
-    #     self.distil_args.load_student = os.path.join(self.training_args.output_dir, 'distilled_student')
-    #     self.setup_teacher_student(client_model, self.distil_args)
-    #
-    #     del client_model.teacher
-    #     return client_model
+    def load_distilled_checkpoint(self):
+        self.setup_teacher_student(self.model, self.distil_args)
+
+        to_student(self.model, self.distil_args.student_l_pad,
+                   self.distil_args.student_r_pad)  # bind student with top and bottom layers to train
+
+        logger.info(f"Loading model from checkpoint {self.distil_args.distil_resume_from_checkpoint}")
+        model_dict = torch.load(os.path.join(self.distil_args.distil_resume_from_checkpoint, 'pytorch_model.bin'))
+        self.model.load_state_dict(model_dict)
+
+        print(self.model)
+        # save the distilled student model
+        state_dict = self.model.student.state_dict()
+        for k in state_dict:
+            state_dict[k] = state_dict[k].to(torch.float16).cpu()
+        torch.save(state_dict, os.path.join(self.distil_args.distil_resume_from_checkpoint, 'student.pt'))
+        logger.info(f"Finish loading student module in {os.path.join(self.distil_args.distil_resume_from_checkpoint, 'student.pt')}")
+        return self.model
 
     def set_plugin_params(self):
         logger.warning(f"self.model idx in set_plugin_params(): {id(self.model)}")

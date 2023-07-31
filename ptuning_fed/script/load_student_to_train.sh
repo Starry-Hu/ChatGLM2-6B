@@ -24,8 +24,9 @@ NUM_GPUS=$(echo "$cuda_visible" | awk -F"," '{print NF}')
 gradient_accumulation_steps=$(( 80 / ($NUM_GPUS * $bs) ))
 echo "gradient_accumulation_steps: ${gradient_accumulation_steps}"
 
+MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 
-CUDA_VISIBLE_DEVICES=$$cuda_visible torchrun --standalone --nnodes=1 --nproc_per_node=$NUM_GPUS main.py \
+CUDA_VISIBLE_DEVICES=$cuda_visible torchrun --standalone --nnodes=1 --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT test_load_client.py \
     --do_train \
     --do_eval \
     --train_file AdvertiseGen/train.json \
@@ -34,14 +35,14 @@ CUDA_VISIBLE_DEVICES=$$cuda_visible torchrun --standalone --nnodes=1 --nproc_per
     --prompt_column content \
     --response_column summary \
     --overwrite_cache \
-    --model_name_or_path ${run_dir}/pretrain/nlp/$MODEL \
-    --output_dir output/adgen-$MODEL-$PRE_SEQ_LEN-$LR \
+    --model_name_or_path ${run_dir}/pretrain/nlp/${MODEL} \
+    --output_dir ${run_dir}/output/adgen-chatglm2-6b-pt-$PRE_SEQ_LEN-$LR \
     --overwrite_output_dir \
     --max_source_length 64 \
     --max_target_length 128 \
-    --per_device_train_batch_size $bs \
-    --per_device_eval_batch_size $bs \
-    --gradient_accumulation_steps $gradient_accumulation_steps \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 16 \
     --predict_with_generate \
     --max_steps 100 \
     --logging_steps 10 \
@@ -52,7 +53,9 @@ CUDA_VISIBLE_DEVICES=$$cuda_visible torchrun --standalone --nnodes=1 --nproc_per
     --student_r_pad 2 \
     --lm_weight 0.8 \
     --kd_weight 0.2 \
-    --use_lora
+    --use_lora \
+    --load_student ${run_dir}/output/fedllm/distilled/emulators/${MODEL}_${num_student_layers}_${pad}_${pad}/checkpoint-45000/student.pt
+
 
 #    --do_distil \
 

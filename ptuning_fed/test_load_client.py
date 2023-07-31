@@ -334,17 +334,6 @@ def main():
             )
         # print_dataset_example(predict_dataset[0])
 
-
-    if distil_args.do_distil:
-        server_handler = ServerDistilHandler(model, model_args, training_args, data_args, distil_args)
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        server_handler.distillation(train_dataset, eval_dataset, tokenizer, data_collator)
-        logger.info("Finished distillation. You can use the distilled student model for client local training")
-        return  # only for distillation
-
     # federated
     # Override the decoding parameters of Seq2SeqTrainer
     training_args.generation_max_length = (
@@ -367,24 +356,17 @@ def main():
     }}
 
     # generate sLLM
-    if distil_args.num_student_layers is not None:
-        layers = get_layers(model)
-        layers = uniform_choose_layers(layers, distil_args.num_student_layers)  # student
-        set_layers(model, layers)
+    # only using this is ok! 将get_layers, load_state, choose_layer, set_layers全部封装好了
     if distil_args.load_student:
         student_state_dict = torch.load(distil_args.load_student, map_location='cpu')
         model = load_student(model, student_state_dict, distil_args)
         model.trainable_module = get_layers(model)
+        logger.critical(f"model.trainable_module: {model.trainable_module}")
         use_lora(model.trainable_module, distil_args.lora_rank, distil_args.lora_alpha)
 
-    logger.info("load trained model ")
-    model_dict = torch.load('/mnt/workspace/code/ChatGLM2-6B-fed/ptuning_fed/output/adgen-chatglm2-6b-pt-128-2e-2/fed_sLLM/pytorch_model.bin')
-    model.load_state_dict(model_dict, strict=False)
-
-    logger.info("load trained model pkl")
-    cur_params = serialize_model_trainable(model)
-    deserialize_model_trainable(model, cur_params)
-
+    # logger.info("load trained model pkl")
+    # cur_params = serialize_model_trainable(model)
+    # deserialize_model_trainable(model, cur_params)
 
     fed_trainer = FedTrainer(model, model_args, training_args, data_args, tokenizer, client_datasets,
                              len(client_datasets))
